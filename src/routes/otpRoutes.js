@@ -80,7 +80,9 @@ router.post("/verify", async (req, res) => {
     res.json({ 
       message: "OTP verified successfully", 
       userId: user._id,
-      username: user.username
+      username: user.username,
+      fullName: user.fullName,
+      email: user.email
     });
   } catch (err) {
     console.error("OTP verification error:", err);
