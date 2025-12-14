@@ -77,9 +77,20 @@ router.post("/signup", async (req, res) => {
     });
   } catch (err) {
     console.error("Signup error:", err);
+    
+    // Handle MongoDB duplicate key errors
+    if (err.code === 11000) {
+      const field = Object.keys(err.keyPattern)[0];
+      const fieldName = field === 'username' ? 'Username' : 
+                       field === 'email' ? 'Email' : 
+                       field === 'mobile' ? 'Mobile number' : 'Field';
+      return res.status(400).json({ message: `${fieldName} already exists` });
+    }
+    
     if (err.name === 'ValidationError') {
       return res.status(400).json({ message: err.message });
     }
+    
     res.status(500).json({ message: "Server error" });
   }
 });

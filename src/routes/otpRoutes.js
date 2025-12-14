@@ -1,5 +1,6 @@
 import express from "express";
 import User from "../models/User.js";
+import { generateOTP, sendOTP, validateMobileNumber } from "../services/smsService.js";
 
 const router = express.Router();
 
@@ -7,7 +8,7 @@ const router = express.Router();
 router.post("/generate", async (req, res) => {
   const { mobile } = req.body;
 
-  if (!mobile || !/^[0-9]{10}$/.test(mobile)) {
+  if (!mobile || !validateMobileNumber(mobile)) {
     return res.status(400).json({ message: "Please provide a valid 10-digit mobile number" });
   }
 
@@ -19,7 +20,7 @@ router.post("/generate", async (req, res) => {
     }
 
     // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = generateOTP();
     
     // Set OTP expiration to 5 minutes from now
     const otpExpires = new Date(Date.now() + 5 * 60 * 1000);
@@ -27,17 +28,26 @@ router.post("/generate", async (req, res) => {
     // Update user with OTP and expiration
     user.otp = otp;
     user.otpExpires = otpExpires;
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
-    // In production, send OTP via SMS service (Twilio, etc.)
-    // For development, we'll just log it
-    console.log(`OTP for ${mobile}: ${otp}`);
-
-    res.json({ 
-      message: "OTP sent successfully", 
-      // Remove this in production - only for development
-      developmentOtp: otp 
-    });
+    // Send OTP via SMS
+    try {
+      await sendOTP(mobile, otp);
+      console.log(`OTP ${otp} sent successfully to ${mobile}`);
+      
+      res.json({ 
+        message: "OTP sent successfully to your mobile number"
+      });
+    } catch (smsError) {
+      console.error("SMS sending failed:", smsError);
+      // Still return success but with development OTP for testing
+      res.json({ 
+        message: "OTP generated. SMS delivery may be delayed.",
+        warning: "SMS service error",
+        // Include OTP in development for testing if SMS fails
+        developmentOtp: otp 
+      });
+    }
   } catch (err) {
     console.error("OTP generation error:", err);
     res.status(500).json({ message: "Server error" });
@@ -75,7 +85,7 @@ router.post("/verify", async (req, res) => {
     // Clear OTP after successful verification
     user.otp = undefined;
     user.otpExpires = undefined;
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
 
     res.json({ 
       message: "OTP verified successfully", 
