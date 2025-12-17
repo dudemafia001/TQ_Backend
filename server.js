@@ -17,11 +17,40 @@ app.use(cors({ origin: config.cors.allowedOrigins }));
 
 app.use(express.json());
 
-// MongoDB connection
-mongoose
-  .connect(config.database.mongoUri)
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch((err) => console.error("❌ MongoDB Connection Failed:", err));
+// MongoDB connection with better error handling for Vercel
+let isConnected = false;
+
+const connectDB = async () => {
+  if (isConnected) {
+    console.log("Using existing database connection");
+    return;
+  }
+
+  try {
+    const db = await mongoose.connect(config.database.mongoUri, {
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+    isConnected = db.connections[0].readyState === 1;
+    console.log("✅ MongoDB Connected");
+  } catch (err) {
+    console.error("❌ MongoDB Connection Failed:", err);
+    throw err;
+  }
+};
+
+// Middleware to ensure DB connection before handling requests
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    res.status(500).json({ 
+      message: "Database connection error", 
+      error: error.message 
+    });
+  }
+});
 
 // Routes
 app.use("/api/auth", authRoutes);
@@ -37,9 +66,14 @@ app.get("/", (req, res) => {
   res.send("API is running...");
 });
 
-// Start server
-app.listen(config.server.port, () => {
-  console.log(`🚀 Server running on port ${config.server.port}`);
-  console.log(`🌍 Environment: ${config.server.environment}`);
-  console.log(`🔗 CORS allowed origins: ${config.cors.allowedOrigins.join(', ')}`);
-});
+// Start server (for local development)
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(config.server.port, () => {
+    console.log(`🚀 Server running on port ${config.server.port}`);
+    console.log(`🌍 Environment: ${config.server.environment}`);
+    console.log(`🔗 CORS allowed origins: ${config.cors.allowedOrigins.join(', ')}`);
+  });
+}
+
+// Export for Vercel serverless
+export default app;
