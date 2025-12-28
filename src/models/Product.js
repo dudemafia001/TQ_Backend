@@ -9,6 +9,7 @@ const productSchema = new mongoose.Schema({
   name: { type: String, required: true },
   category: { type: String, required: true },
   description: { type: String },
+  imageUrl: { type: String },
   variants: [variantSchema],
   inStock: { type: Boolean, default: true },
   createdDate: { type: Date, default: Date.now }

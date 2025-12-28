@@ -31,7 +31,9 @@ router.get("/:id", async (req, res) => {
 // ✅ Create single product (Admin only)
 router.post("/", async (req, res) => {
   try {
-    const { name, category, description, variants, inStock } = req.body;
+    const { name, category, description, imageUrl, variants, inStock } = req.body;
+    
+    console.log('Creating product with data:', { name, category, description, imageUrl, variants, inStock });
     
     // Validate required fields
     if (!name || !category) {
@@ -42,11 +44,13 @@ router.post("/", async (req, res) => {
       name,
       category,
       description,
+      imageUrl,
       variants: variants || [],
       inStock: inStock !== undefined ? inStock : true
     });
 
     const savedProduct = await product.save();
+    console.log('Saved product:', savedProduct);
     res.status(201).json(savedProduct);
   } catch (error) {
     console.error("Error creating product:", error);
@@ -57,7 +61,9 @@ router.post("/", async (req, res) => {
 // ✅ Update product by ID (Admin only)
 router.put("/:id", async (req, res) => {
   try {
-    const { name, category, description, variants, inStock } = req.body;
+    const { name, category, description, imageUrl, variants, inStock } = req.body;
+    
+    console.log('Updating product', req.params.id, 'with data:', { name, category, description, imageUrl, variants, inStock });
     
     const product = await Product.findById(req.params.id);
     if (!product) {
@@ -68,10 +74,12 @@ router.put("/:id", async (req, res) => {
     if (name !== undefined) product.name = name;
     if (category !== undefined) product.category = category;
     if (description !== undefined) product.description = description;
+    if (imageUrl !== undefined) product.imageUrl = imageUrl;
     if (variants !== undefined) product.variants = variants;
     if (inStock !== undefined) product.inStock = inStock;
 
     const updatedProduct = await product.save();
+    console.log('Updated product:', updatedProduct);
     res.json(updatedProduct);
   } catch (error) {
     console.error("Error updating product:", error);
