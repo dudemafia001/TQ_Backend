@@ -11,6 +11,7 @@ import orderRoutes from "./src/routes/orderRoutes.js";
 import adminRoutes from "./src/routes/adminRoutes.js";
 import contactRoutes from "./src/routes/contactRoutes.js";
 import otpRoutes from "./src/routes/otpRoutes.js";
+import siteStatusRoutes from "./src/routes/siteStatusRoutes.js";
 
 const app = express();
 app.use(cors({ origin: config.cors.allowedOrigins }));
@@ -61,6 +62,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/otp", otpRoutes);
+app.use("/api/site", siteStatusRoutes);
 
 app.get("/", (req, res) => {
   res.send("API is running...");
