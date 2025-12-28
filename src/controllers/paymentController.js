@@ -2,6 +2,7 @@ import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import Order from '../models/Order.js';
+import telegramService from '../services/telegramService.js';
 
 dotenv.config();
 
@@ -246,8 +247,11 @@ export const verifyPayment = async (req, res) => {
           });
 
           console.log('💾 Saving order to database...');
-          await newOrder.save();
+          const savedOrder = await newOrder.save();
           console.log('✅ Order saved successfully:', orderId);
+          
+          // Send Telegram notification
+          telegramService.notifyNewOrder(savedOrder);
         } else {
           console.log('❌ No orderDetails received in payment verification');
         }
@@ -362,6 +366,9 @@ export const processCashPayment = async (req, res) => {
 
       const savedOrder = await newOrder.save();
       console.log('Cash order saved to database:', orderId);
+
+      // Send Telegram notification
+      telegramService.notifyNewOrder(savedOrder);
 
       return res.status(200).json({
         success: true,

@@ -1,5 +1,6 @@
 import express from "express";
 import Order from "../models/Order.js";
+import telegramService from "../services/telegramService.js";
 
 const router = express.Router();
 
@@ -33,6 +34,9 @@ router.post("/create", async (req, res) => {
     });
 
     const savedOrder = await newOrder.save();
+
+    // Send Telegram notification
+    telegramService.notifyNewOrder(savedOrder);
 
     res.status(201).json({
       success: true,
