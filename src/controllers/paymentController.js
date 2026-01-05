@@ -226,17 +226,17 @@ export const verifyPayment = async (req, res) => {
             orderNumber: orderId, // Set orderNumber to avoid null index conflicts
             userId: orderDetails.userId || 'guest',
             customerInfo: {
-              name: orderDetails.customerInfo.fullName,
-              phone: orderDetails.customerInfo.phone,
-              email: orderDetails.customerInfo.email
+              name: orderDetails.customerInfo?.fullName || 'Guest',
+              phone: orderDetails.customerInfo?.phone || 'N/A',
+              email: orderDetails.customerInfo?.email || ''
             },
             deliveryAddress,
             items: orderItems,
             pricing: {
-              subtotal: orderDetails.subtotal,
-              packagingCharge: orderDetails.packagingCharge || 0,
-              couponDiscount: orderDetails.couponDiscount || 0,
-              finalTotal: orderDetails.finalTotal
+              subtotal: parseFloat(orderDetails.subtotal) || 0,
+              packagingCharge: parseFloat(orderDetails.packagingCharge) || 0,
+              couponDiscount: parseFloat(orderDetails.couponDiscount) || 0,
+              finalTotal: parseFloat(orderDetails.finalTotal) || 0
             },
             paymentInfo: {
               method: 'online',
@@ -245,13 +245,22 @@ export const verifyPayment = async (req, res) => {
               status: 'paid'
             },
             appliedCoupon: orderDetails.appliedCoupon ? {
-              code: orderDetails.appliedCoupon.code,
-              discount: orderDetails.appliedCoupon.discount_value || 0
-            } : {},
+              code: orderDetails.appliedCoupon.code || '',
+              discount: parseFloat(orderDetails.appliedCoupon.discount_value || orderDetails.appliedCoupon.discount || 0)
+            } : undefined,
             estimatedDeliveryTime
           });
 
           console.log('💾 Saving order to database...');
+          console.log('📋 Order object before save:', JSON.stringify(newOrder.toObject(), null, 2));
+          
+          // Validate before saving
+          const validationError = newOrder.validateSync();
+          if (validationError) {
+            console.error('❌ Validation error:', validationError);
+            throw validationError;
+          }
+          
           const savedOrder = await newOrder.save();
           console.log('✅ Order saved successfully:', orderId);
           

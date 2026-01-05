@@ -1,0 +1,10 @@
+[dotenv@17.2.2] injecting env (9) from .env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[dotenv@17.2.2] injecting env (0) from .env -- tip: 📡 observe env with Radar: https://dotenvx.com/radar
+🚀 Server running on port 5001
+🌍 Environment: development
+🔗 CORS allowed origins: https://thequisine.in, https://staging.thequisine.in, http://localhost:3000
+✅ MongoDB Connected
+Using existing database connection
+Using existing database connection
+Using existing database connection
+Using existing database connection

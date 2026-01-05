@@ -14,7 +14,12 @@ import otpRoutes from "./src/routes/otpRoutes.js";
 import siteStatusRoutes from "./src/routes/siteStatusRoutes.js";
 
 const app = express();
-app.use(cors({ origin: config.cors.allowedOrigins }));
+app.use(cors({ 
+  origin: config.cors.allowedOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 app.use(express.json());
 
