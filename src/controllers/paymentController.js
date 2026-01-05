@@ -154,6 +154,9 @@ export const createOrder = async (req, res) => {
 // Verify payment
 export const verifyPayment = async (req, res) => {
   try {
+    console.log('🔐 === PAYMENT VERIFICATION REQUEST RECEIVED ===');
+    console.log('Request Body:', JSON.stringify(req.body, null, 2));
+    
     const { 
       razorpay_order_id, 
       razorpay_payment_id, 
@@ -165,6 +168,8 @@ export const verifyPayment = async (req, res) => {
     console.log('Razorpay Order ID:', razorpay_order_id);
     console.log('Razorpay Payment ID:', razorpay_payment_id);
     console.log('Received signature:', razorpay_signature);
+    console.log('Has orderDetails:', !!orderDetails);
+    console.log('RAZORPAY_KEY_SECRET exists:', !!process.env.RAZORPAY_KEY_SECRET);
     
     // Create signature for verification
     const body = razorpay_order_id + "|" + razorpay_payment_id;
@@ -256,9 +261,22 @@ export const verifyPayment = async (req, res) => {
           console.log('❌ No orderDetails received in payment verification');
         }
       } catch (dbError) {
-        console.error('❌ Error saving order to database:', dbError);
+        console.error('❌ === DATABASE ERROR SAVING ORDER ===');
+        console.error('Error message:', dbError.message);
+        console.error('Error name:', dbError.name);
         console.error('Stack trace:', dbError.stack);
-        // Continue with success response even if DB save fails
+        
+        // Log the order data that failed to save
+        console.error('Failed order data:', JSON.stringify(orderDetails, null, 2));
+        
+        // Return error response when DB save fails
+        return res.status(500).json({
+          success: false,
+          message: 'Payment verified but order could not be saved',
+          error: dbError.message,
+          payment_id: razorpay_payment_id,
+          order_id: razorpay_order_id
+        });
       }
 
       return res.status(200).json({
