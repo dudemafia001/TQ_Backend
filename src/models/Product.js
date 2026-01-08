@@ -7,11 +7,11 @@ const variantSchema = new mongoose.Schema({
 
 const productSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  category: { type: String, required: true },
+  category: { type: String, required: true, index: true }, // Add index for faster filtering
   description: { type: String },
   imageUrl: { type: String },
   variants: [variantSchema],
-  inStock: { type: Boolean, default: true },
+  inStock: { type: Boolean, default: true, index: true }, // Add index for stock queries
   createdDate: { type: Date, default: Date.now }
 });
 

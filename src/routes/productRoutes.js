@@ -3,10 +3,28 @@ import Product from "../models/Product.js";
 
 const router = express.Router();
 
-// ✅ Get all products (Public)
+// Simple in-memory cache for products
+let productsCache = null;
+let cacheTimestamp = null;
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+// ✅ Get all products (Public) - with caching
 router.get("/", async (req, res) => {
   try {
-    const products = await Product.find();
+    // Check if cache is valid
+    const now = Date.now();
+    if (productsCache && cacheTimestamp && (now - cacheTimestamp) < CACHE_DURATION) {
+      console.log("Serving products from cache");
+      return res.json(productsCache);
+    }
+
+    // Fetch from database
+    const products = await Product.find().lean(); // Use .lean() for faster queries
+    
+    // Update cache
+    productsCache = products;
+    cacheTimestamp = now;
+    
     res.json(products);
   } catch (error) {
     console.error("Error fetching products:", error);
@@ -51,6 +69,11 @@ router.post("/", async (req, res) => {
 
     const savedProduct = await product.save();
     console.log('Saved product:', savedProduct);
+    
+    // Invalidate cache
+    productsCache = null;
+    cacheTimestamp = null;
+    
     res.status(201).json(savedProduct);
   } catch (error) {
     console.error("Error creating product:", error);
@@ -80,6 +103,11 @@ router.put("/:id", async (req, res) => {
 
     const updatedProduct = await product.save();
     console.log('Updated product:', updatedProduct);
+    
+    // Invalidate cache
+    productsCache = null;
+    cacheTimestamp = null;
+    
     res.json(updatedProduct);
   } catch (error) {
     console.error("Error updating product:", error);
@@ -94,6 +122,11 @@ router.delete("/:id", async (req, res) => {
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
+    
+    // Invalidate cache
+    productsCache = null;
+    cacheTimestamp = null;
+    
     res.json({ message: "Product deleted successfully", product });
   } catch (error) {
     console.error("Error deleting product:", error);

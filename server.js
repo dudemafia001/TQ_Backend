@@ -34,8 +34,10 @@ const connectDB = async () => {
 
   try {
     const db = await mongoose.connect(config.database.mongoUri, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 30000, // Increased to 30 seconds for cloud DB
       socketTimeoutMS: 45000,
+      maxPoolSize: 10, // Connection pool for better performance
+      minPoolSize: 2,
     });
     isConnected = db.connections[0].readyState === 1;
     console.log("✅ MongoDB Connected");
