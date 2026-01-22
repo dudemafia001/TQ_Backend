@@ -5,7 +5,7 @@ const siteStatusSchema = new mongoose.Schema({
   closedMessage: { type: String, default: 'We are currently closed. Please check back later!' },
   reopenTime: { type: Date, default: null },
   // Operating hours
-  operatingHoursEnabled: { type: Boolean, default: true },
+  operatingHoursEnabled: { type: Boolean, default: false }, // Changed to false - disabled by default
   operatingHours: {
     start: { type: String, default: '12:00' }, // 12:00 PM
     end: { type: String, default: '23:00' }    // 11:00 PM
