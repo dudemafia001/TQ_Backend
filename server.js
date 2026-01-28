@@ -12,6 +12,9 @@ import adminRoutes from "./src/routes/adminRoutes.js";
 import contactRoutes from "./src/routes/contactRoutes.js";
 import otpRoutes from "./src/routes/otpRoutes.js";
 import siteStatusRoutes from "./src/routes/siteStatusRoutes.js";
+import blogRoutes from "./src/routes/blogRoutes.js";
+import adminBlogRoutes from "./src/routes/adminBlogRoutes.js";
+import uploadRoutes from "./src/routes/uploadRoutes.js";
 
 const app = express();
 app.use(cors({ 
@@ -70,6 +73,9 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/otp", otpRoutes);
 app.use("/api/site", siteStatusRoutes);
+app.use("/api/blog", blogRoutes);
+app.use("/api/admin/blogs", adminBlogRoutes);
+app.use("/api/upload", uploadRoutes);
 
 app.get("/", (req, res) => {
   res.send("API is running...");

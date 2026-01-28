@@ -316,8 +316,8 @@ export const processCashPayment = async (req, res) => {
   try {
     const { orderDetails, amount } = req.body;
 
-    // Validate minimum order amount for cash payment (₹499)
-    const minimumAmount = 499;
+    // Validate minimum order amount for cash payment (₹349)
+    const minimumAmount = 349;
     
     if (amount < minimumAmount) {
       return res.status(400).json({
