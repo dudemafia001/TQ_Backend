@@ -21,7 +21,8 @@ const orderSchema = new mongoose.Schema({
   deliveryAddress: {
     address: { type: String, required: true },
     lat: { type: Number },
-    lng: { type: Number }
+    lng: { type: Number },
+    specialRequest: { type: String }
   },
   items: [orderItemSchema],
   pricing: {

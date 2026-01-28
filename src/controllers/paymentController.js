@@ -211,11 +211,16 @@ export const verifyPayment = async (req, res) => {
           
           console.log('📦 Transformed order items:', JSON.stringify(orderItems, null, 2));
           
+          console.log('📍 DeliveryAddress from frontend:', JSON.stringify(orderDetails.deliveryAddress, null, 2));
+          
           const deliveryAddress = {
             address: orderDetails.deliveryAddress?.address || 'No address provided',
             lat: orderDetails.deliveryAddress?.lat,
-            lng: orderDetails.deliveryAddress?.lng
+            lng: orderDetails.deliveryAddress?.lng,
+            specialRequest: orderDetails.deliveryAddress?.specialRequest || ''
           };
+          
+          console.log('📍 DeliveryAddress to save:', JSON.stringify(deliveryAddress, null, 2));
           
           // Calculate estimated delivery time based on location
           const estimatedDeliveryTime = calculateEstimatedDeliveryTime(deliveryAddress);
@@ -353,11 +358,16 @@ export const processCashPayment = async (req, res) => {
       
       console.log('📦 Transformed order items:', JSON.stringify(orderItems, null, 2));
       
+      console.log('📍 DeliveryAddress from frontend (CASH):', JSON.stringify(orderDetails.deliveryAddress, null, 2));
+      
       const deliveryAddress = {
         address: orderDetails.deliveryAddress?.address || 'No address provided',
         lat: orderDetails.deliveryAddress?.lat,
-        lng: orderDetails.deliveryAddress?.lng
+        lng: orderDetails.deliveryAddress?.lng,
+        specialRequest: orderDetails.deliveryAddress?.specialRequest || ''
       };
+      
+      console.log('📍 DeliveryAddress to save (CASH):', JSON.stringify(deliveryAddress, null, 2));
       
       // Calculate estimated delivery time based on location
       const estimatedDeliveryTime = calculateEstimatedDeliveryTime(deliveryAddress);

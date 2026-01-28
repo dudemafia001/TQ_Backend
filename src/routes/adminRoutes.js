@@ -130,7 +130,10 @@ router.get("/analytics", async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
-    const filter = {};
+    const filter = {
+      orderStatus: { $ne: 'cancelled' } // Exclude cancelled orders
+    };
+    
     if (startDate || endDate) {
       filter.createdAt = {};
       if (startDate) {
@@ -147,7 +150,7 @@ router.get("/analytics", async (req, res) => {
       }
     }
 
-    // Total orders and revenue
+    // Total orders and revenue (excluding cancelled)
     const totalOrders = await Order.countDocuments(filter);
     
     const revenueResult = await Order.aggregate([
