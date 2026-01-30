@@ -156,6 +156,7 @@ export const verifyPayment = async (req, res) => {
   try {
     console.log('🔐 === PAYMENT VERIFICATION REQUEST RECEIVED ===');
     console.log('Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('Request Headers:', JSON.stringify(req.headers, null, 2));
     
     const { 
       razorpay_order_id, 
@@ -170,6 +171,15 @@ export const verifyPayment = async (req, res) => {
     console.log('Received signature:', razorpay_signature);
     console.log('Has orderDetails:', !!orderDetails);
     console.log('RAZORPAY_KEY_SECRET exists:', !!process.env.RAZORPAY_KEY_SECRET);
+    
+    // Validate required fields
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      console.error('❌ Missing required payment verification fields');
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required payment verification fields'
+      });
+    }
     
     // Create signature for verification
     const body = razorpay_order_id + "|" + razorpay_payment_id;
