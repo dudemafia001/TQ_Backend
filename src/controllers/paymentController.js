@@ -148,7 +148,7 @@ const validateOrderDetails = (orderDetails) => {
   }
 
   // Validate pricing
-  if (!orderDetails.subtotal || typeof orderDetails.subtotal !== 'number' || orderDetails.subtotal < 0) {
+  if (orderDetails.subtotal == null || typeof orderDetails.subtotal !== 'number' || orderDetails.subtotal < 0) {
     errors.push('Valid subtotal is required');
   }
   if (typeof orderDetails.finalTotal !== 'number' || orderDetails.finalTotal < 0) {
