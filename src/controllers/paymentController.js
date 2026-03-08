@@ -154,9 +154,6 @@ const validateOrderDetails = (orderDetails) => {
   if (typeof orderDetails.finalTotal !== 'number' || orderDetails.finalTotal < 0) {
     errors.push('Valid final total is required');
   }
-  if (orderDetails.finalTotal < orderDetails.subtotal) {
-    errors.push('Final total cannot be less than subtotal');
-  }
 
   // Validate userId (optional, defaults to 'guest')
   if (orderDetails.userId !== undefined && orderDetails.userId !== null && typeof orderDetails.userId !== 'string') {
