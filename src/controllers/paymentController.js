@@ -6,14 +6,20 @@ import telegramService from '../services/telegramService.js';
 
 dotenv.config();
 
-// Helper function to generate unique order ID with format TQ + 4 digits + single hash
+// Helper function to generate unique order ID with 6-character alphanumeric format
+// Format: TQ + 6 alphanumeric characters (e.g., TQ5K9X2M)
 const generateOrderId = async () => {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let orderId;
   let isUnique = false;
   
   while (!isUnique) {
-    const randomNum = Math.floor(1000 + Math.random() * 9000); // Generate 4-digit number
-    orderId = `TQ${randomNum}#`;
+    // Generate 6 random alphanumeric characters
+    let randomId = '';
+    for (let i = 0; i < 6; i++) {
+      randomId += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    orderId = `TQ${randomId}`;
     
     // Check if this ID already exists
     const existingOrder = await Order.findOne({ orderId });
@@ -84,6 +90,80 @@ const calculateDistance = (lat1, lng1, lat2, lng2) => {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   const distance = R * c; // Distance in kilometers
   return distance;
+};
+
+// Comprehensive order validation helper function
+const validateOrderDetails = (orderDetails) => {
+  const errors = [];
+
+  // Validate orderDetails exists
+  if (!orderDetails) {
+    errors.push('Order details are required');
+    return errors;
+  }
+
+  // Validate customer info
+  if (!orderDetails.customerInfo) {
+    errors.push('Customer information is required');
+  } else {
+    if (!orderDetails.customerInfo.fullName || orderDetails.customerInfo.fullName.trim() === '') {
+      errors.push('Customer name is required');
+    }
+    if (!orderDetails.customerInfo.phone || orderDetails.customerInfo.phone.trim() === '') {
+      errors.push('Customer phone number is required');
+    }
+    // Email is optional but validate format if provided
+    if (orderDetails.customerInfo.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(orderDetails.customerInfo.email)) {
+      errors.push('Invalid email format');
+    }
+  }
+
+  // Validate delivery address
+  if (!orderDetails.deliveryAddress) {
+    errors.push('Delivery address is required');
+  } else {
+    if (!orderDetails.deliveryAddress.address || orderDetails.deliveryAddress.address.trim() === '') {
+      errors.push('Delivery address cannot be empty');
+    }
+  }
+
+  // Validate cart items
+  if (!orderDetails.cartItems || !Array.isArray(orderDetails.cartItems) || orderDetails.cartItems.length === 0) {
+    errors.push('Cart items are required (at least one item)');
+  } else {
+    orderDetails.cartItems.forEach((item, index) => {
+      if (!item.id || item.id.toString().trim() === '') {
+        errors.push(`Item ${index + 1}: Product ID is required`);
+      }
+      if (!item.name || item.name.trim() === '') {
+        errors.push(`Item ${index + 1}: Product name is required`);
+      }
+      if (typeof item.price !== 'number' || item.price < 0) {
+        errors.push(`Item ${index + 1}: Valid price is required`);
+      }
+      if (typeof item.quantity !== 'number' || item.quantity < 1) {
+        errors.push(`Item ${index + 1}: Quantity must be at least 1`);
+      }
+    });
+  }
+
+  // Validate pricing
+  if (!orderDetails.subtotal || typeof orderDetails.subtotal !== 'number' || orderDetails.subtotal < 0) {
+    errors.push('Valid subtotal is required');
+  }
+  if (typeof orderDetails.finalTotal !== 'number' || orderDetails.finalTotal < 0) {
+    errors.push('Valid final total is required');
+  }
+  if (orderDetails.finalTotal < orderDetails.subtotal) {
+    errors.push('Final total cannot be less than subtotal');
+  }
+
+  // Validate userId (optional, defaults to 'guest')
+  if (orderDetails.userId !== undefined && orderDetails.userId !== null && typeof orderDetails.userId !== 'string') {
+    errors.push('User ID must be a string');
+  }
+
+  return errors;
 };
 
 // Initialize Razorpay only if credentials are provided
@@ -202,6 +282,19 @@ export const verifyPayment = async (req, res) => {
           console.log('📋 Creating order for online payment...');
           console.log('Order Details received:', JSON.stringify(orderDetails, null, 2));
           
+          // Validate order details before processing
+          const validationErrors = validateOrderDetails(orderDetails);
+          if (validationErrors.length > 0) {
+            console.error('❌ Order validation failed:', validationErrors);
+            return res.status(400).json({
+              success: false,
+              message: 'Order validation failed',
+              errors: validationErrors,
+              payment_id: razorpay_payment_id,
+              order_id: razorpay_order_id
+            });
+          }
+          
           const orderId = await generateOrderId();
           
           // Transform cart items to order items format
@@ -213,9 +306,9 @@ export const verifyPayment = async (req, res) => {
               productId: productId,
               productName: item.name || 'Unknown Product',
               variant: item.variant || 'Regular',
-              price: item.price || 0,
-              quantity: item.quantity || 1,
-              totalPrice: (item.price || 0) * (item.quantity || 1)
+              price: Number(item.price) || 0,
+              quantity: Number(item.quantity) || 1,
+              totalPrice: (Number(item.price) || 0) * (Number(item.quantity) || 1)
             };
           });
           
@@ -224,10 +317,10 @@ export const verifyPayment = async (req, res) => {
           console.log('📍 DeliveryAddress from frontend:', JSON.stringify(orderDetails.deliveryAddress, null, 2));
           
           const deliveryAddress = {
-            address: orderDetails.deliveryAddress?.address || 'No address provided',
-            lat: orderDetails.deliveryAddress?.lat,
-            lng: orderDetails.deliveryAddress?.lng,
-            specialRequest: orderDetails.deliveryAddress?.specialRequest || ''
+            address: orderDetails.deliveryAddress?.address?.trim() || 'No address provided',
+            lat: orderDetails.deliveryAddress?.lat ? Number(orderDetails.deliveryAddress.lat) : undefined,
+            lng: orderDetails.deliveryAddress?.lng ? Number(orderDetails.deliveryAddress.lng) : undefined,
+            specialRequest: orderDetails.deliveryAddress?.specialRequest?.trim() || ''
           };
           
           console.log('📍 DeliveryAddress to save:', JSON.stringify(deliveryAddress, null, 2));
@@ -241,17 +334,17 @@ export const verifyPayment = async (req, res) => {
             orderNumber: orderId, // Set orderNumber to avoid null index conflicts
             userId: orderDetails.userId || 'guest',
             customerInfo: {
-              name: orderDetails.customerInfo?.fullName || 'Guest',
-              phone: orderDetails.customerInfo?.phone || 'N/A',
-              email: orderDetails.customerInfo?.email || ''
+              name: (orderDetails.customerInfo?.fullName || 'Guest').trim(),
+              phone: (orderDetails.customerInfo?.phone || 'N/A').trim(),
+              email: orderDetails.customerInfo?.email?.trim() || ''
             },
             deliveryAddress,
             items: orderItems,
             pricing: {
-              subtotal: parseFloat(orderDetails.subtotal) || 0,
-              packagingCharge: parseFloat(orderDetails.packagingCharge) || 0,
-              couponDiscount: parseFloat(orderDetails.couponDiscount) || 0,
-              finalTotal: parseFloat(orderDetails.finalTotal) || 0
+              subtotal: Number(orderDetails.subtotal) || 0,
+              packagingCharge: Number(orderDetails.packagingCharge) || 0,
+              couponDiscount: Number(orderDetails.couponDiscount) || 0,
+              finalTotal: Number(orderDetails.finalTotal) || 0
             },
             paymentInfo: {
               method: 'online',
@@ -259,9 +352,9 @@ export const verifyPayment = async (req, res) => {
               orderId: razorpay_order_id,
               status: 'paid'
             },
-            appliedCoupon: orderDetails.appliedCoupon ? {
-              code: orderDetails.appliedCoupon.code || '',
-              discount: parseFloat(orderDetails.appliedCoupon.discount_value || orderDetails.appliedCoupon.discount || 0)
+            appliedCoupon: orderDetails.appliedCoupon && orderDetails.appliedCoupon.code ? {
+              code: orderDetails.appliedCoupon.code.trim(),
+              discount: Number(orderDetails.appliedCoupon.discount_value || orderDetails.appliedCoupon.discount || 0)
             } : undefined,
             estimatedDeliveryTime
           });
@@ -272,8 +365,11 @@ export const verifyPayment = async (req, res) => {
           // Validate before saving
           const validationError = newOrder.validateSync();
           if (validationError) {
-            console.error('❌ Validation error:', validationError);
-            throw validationError;
+            console.error('❌ Mongoose validation error:', validationError.message);
+            const fieldErrors = Object.keys(validationError.errors).map(field => 
+              `${field}: ${validationError.errors[field].message}`
+            );
+            throw new Error(`Validation failed: ${fieldErrors.join(', ')}`);
           }
           
           const savedOrder = await newOrder.save();
@@ -283,6 +379,12 @@ export const verifyPayment = async (req, res) => {
           telegramService.notifyNewOrder(savedOrder);
         } else {
           console.log('❌ No orderDetails received in payment verification');
+          return res.status(400).json({
+            success: false,
+            message: 'Order details are required for order creation',
+            payment_id: razorpay_payment_id,
+            order_id: razorpay_order_id
+          });
         }
       } catch (dbError) {
         console.error('❌ === DATABASE ERROR SAVING ORDER ===');
@@ -293,11 +395,21 @@ export const verifyPayment = async (req, res) => {
         // Log the order data that failed to save
         console.error('Failed order data:', JSON.stringify(orderDetails, null, 2));
         
+        // Determine specific error message
+        let errorMessage = 'Failed to save order';
+        if (dbError.code === 11000) {
+          errorMessage = 'Order ID already exists (duplicate order). Please try again.';
+        } else if (dbError.name === 'ValidationError') {
+          errorMessage = `Validation error: ${dbError.message}`;
+        } else if (dbError.name === 'MongoNetworkError') {
+          errorMessage = 'Database connection error. Please try again.';
+        }
+        
         // Return error response when DB save fails
         return res.status(500).json({
           success: false,
           message: 'Payment verified but order could not be saved',
-          error: dbError.message,
+          error: errorMessage,
           payment_id: razorpay_payment_id,
           order_id: razorpay_order_id
         });
@@ -349,6 +461,17 @@ export const processCashPayment = async (req, res) => {
       console.log('💰 Creating cash order...');
       console.log('Order Details received:', JSON.stringify(orderDetails, null, 2));
       
+      // Validate order details before processing
+      const validationErrors = validateOrderDetails(orderDetails);
+      if (validationErrors.length > 0) {
+        console.error('❌ Order validation failed:', validationErrors);
+        return res.status(400).json({
+          success: false,
+          message: 'Order validation failed',
+          errors: validationErrors
+        });
+      }
+      
       const orderId = await generateOrderId();
       
       // Transform cart items to order items format
@@ -360,9 +483,9 @@ export const processCashPayment = async (req, res) => {
           productId: productId,
           productName: item.name || 'Unknown Product',
           variant: item.variant || 'Regular',
-          price: item.price || 0,
-          quantity: item.quantity || 1,
-          totalPrice: (item.price || 0) * (item.quantity || 1)
+          price: Number(item.price) || 0,
+          quantity: Number(item.quantity) || 1,
+          totalPrice: (Number(item.price) || 0) * (Number(item.quantity) || 1)
         };
       });
       
@@ -371,10 +494,10 @@ export const processCashPayment = async (req, res) => {
       console.log('📍 DeliveryAddress from frontend (CASH):', JSON.stringify(orderDetails.deliveryAddress, null, 2));
       
       const deliveryAddress = {
-        address: orderDetails.deliveryAddress?.address || 'No address provided',
-        lat: orderDetails.deliveryAddress?.lat,
-        lng: orderDetails.deliveryAddress?.lng,
-        specialRequest: orderDetails.deliveryAddress?.specialRequest || ''
+        address: orderDetails.deliveryAddress?.address?.trim() || 'No address provided',
+        lat: orderDetails.deliveryAddress?.lat ? Number(orderDetails.deliveryAddress.lat) : undefined,
+        lng: orderDetails.deliveryAddress?.lng ? Number(orderDetails.deliveryAddress.lng) : undefined,
+        specialRequest: orderDetails.deliveryAddress?.specialRequest?.trim() || ''
       };
       
       console.log('📍 DeliveryAddress to save (CASH):', JSON.stringify(deliveryAddress, null, 2));
@@ -388,31 +511,44 @@ export const processCashPayment = async (req, res) => {
         orderNumber: orderId, // Set orderNumber to avoid null index conflicts
         userId: orderDetails.userId || 'guest',
         customerInfo: {
-          name: orderDetails.customerInfo.fullName,
-          phone: orderDetails.customerInfo.phone,
-          email: orderDetails.customerInfo.email
+          name: (orderDetails.customerInfo.fullName || '').trim(),
+          phone: (orderDetails.customerInfo.phone || '').trim(),
+          email: orderDetails.customerInfo.email?.trim() || ''
         },
         deliveryAddress,
         items: orderItems,
         pricing: {
-          subtotal: orderDetails.subtotal,
-          packagingCharge: orderDetails.packagingCharge || 0,
-          couponDiscount: orderDetails.couponDiscount || 0,
-          finalTotal: orderDetails.finalTotal
+          subtotal: Number(orderDetails.subtotal) || 0,
+          packagingCharge: Number(orderDetails.packagingCharge) || 0,
+          couponDiscount: Number(orderDetails.couponDiscount) || 0,
+          finalTotal: Number(orderDetails.finalTotal) || 0
         },
         paymentInfo: {
           method: 'cash',
           status: 'pending'
         },
-        appliedCoupon: orderDetails.appliedCoupon ? {
-          code: orderDetails.appliedCoupon.code,
-          discount: orderDetails.appliedCoupon.discount_value || 0
-        } : {},
+        appliedCoupon: orderDetails.appliedCoupon && orderDetails.appliedCoupon.code ? {
+          code: orderDetails.appliedCoupon.code.trim(),
+          discount: Number(orderDetails.appliedCoupon.discount_value || 0)
+        } : undefined,
         estimatedDeliveryTime
       });
 
+      console.log('💾 Saving cash order to database...');
+      console.log('📋 Cash order object before save:', JSON.stringify(newOrder.toObject(), null, 2));
+      
+      // Validate before saving
+      const validationError = newOrder.validateSync();
+      if (validationError) {
+        console.error('❌ Mongoose validation error:', validationError.message);
+        const fieldErrors = Object.keys(validationError.errors).map(field => 
+          `${field}: ${validationError.errors[field].message}`
+        );
+        throw new Error(`Validation failed: ${fieldErrors.join(', ')}`);
+      }
+
       const savedOrder = await newOrder.save();
-      console.log('Cash order saved to database:', orderId);
+      console.log('✅ Cash order saved to database:', orderId);
 
       // Send Telegram notification
       telegramService.notifyNewOrder(savedOrder);
@@ -426,11 +562,26 @@ export const processCashPayment = async (req, res) => {
       });
       
     } catch (dbError) {
-      console.error('Error saving cash order to database:', dbError);
+      console.error('❌ === DATABASE ERROR SAVING CASH ORDER ===');
+      console.error('Error message:', dbError.message);
+      console.error('Error name:', dbError.name);
+      console.error('Stack trace:', dbError.stack);
+      console.error('Failed order data:', JSON.stringify(orderDetails, null, 2));
+      
+      // Determine specific error message
+      let errorMessage = 'Failed to save order';
+      if (dbError.code === 11000) {
+        errorMessage = 'Order ID already exists (duplicate order). Please try again.';
+      } else if (dbError.name === 'ValidationError') {
+        errorMessage = `Validation error: ${dbError.message}`;
+      } else if (dbError.name === 'MongoNetworkError') {
+        errorMessage = 'Database connection error. Please try again.';
+      }
+      
       return res.status(500).json({
         success: false,
         message: 'Failed to save order',
-        error: dbError.message
+        error: errorMessage
       });
     }
 
