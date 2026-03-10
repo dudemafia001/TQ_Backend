@@ -24,7 +24,12 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    // Capture raw body for webhook signature verification
+    req.rawBody = buf.toString();
+  }
+}));
 
 // MongoDB connection with better error handling for Vercel
 let isConnected = false;

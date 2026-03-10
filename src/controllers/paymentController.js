@@ -2,6 +2,7 @@ import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import Order from '../models/Order.js';
+import PendingOrder from '../models/PendingOrder.js';
 import telegramService from '../services/telegramService.js';
 
 dotenv.config();
@@ -186,7 +187,7 @@ export const createOrder = async (req, res) => {
       });
     }
 
-    const { amount, currency = 'INR', receipt } = req.body;
+    const { amount, currency = 'INR', receipt, orderDetails } = req.body;
 
     // Validate amount
     if (!amount || amount <= 0) {
@@ -206,6 +207,20 @@ export const createOrder = async (req, res) => {
 
     // Create order with Razorpay
     const order = await razorpay.orders.create(options);
+
+    // Save order details for webhook fallback (in case frontend flow is interrupted)
+    if (orderDetails) {
+      try {
+        await PendingOrder.findOneAndUpdate(
+          { razorpayOrderId: order.id },
+          { razorpayOrderId: order.id, orderDetails, amount },
+          { upsert: true, new: true }
+        );
+        console.log('📋 Pending order details saved for:', order.id);
+      } catch (pendingErr) {
+        console.error('⚠️ Failed to save pending order details (non-blocking):', pendingErr.message);
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -272,6 +287,20 @@ export const verifyPayment = async (req, res) => {
     if (expectedSignature === razorpay_signature) {
       // Payment is verified - save order to database
       console.log('Payment verified successfully');
+      
+      // Check if order was already created by webhook
+      const existingOrder = await Order.findOne({ 'paymentInfo.orderId': razorpay_order_id });
+      if (existingOrder) {
+        console.log('✅ Order already exists (created by webhook):', existingOrder.orderId);
+        // Clean up pending order
+        await PendingOrder.deleteOne({ razorpayOrderId: razorpay_order_id }).catch(() => {});
+        return res.status(200).json({
+          success: true,
+          message: 'Payment verified successfully',
+          payment_id: razorpay_payment_id,
+          order_id: razorpay_order_id
+        });
+      }
       
       try {
         // Create order in database
@@ -372,16 +401,28 @@ export const verifyPayment = async (req, res) => {
           const savedOrder = await newOrder.save();
           console.log('✅ Order saved successfully:', orderId);
           
+          // Clean up pending order data
+          await PendingOrder.deleteOne({ razorpayOrderId: razorpay_order_id }).catch(() => {});
+          
           // Send Telegram notification
           telegramService.notifyNewOrder(savedOrder);
         } else {
-          console.log('❌ No orderDetails received in payment verification');
-          return res.status(400).json({
-            success: false,
-            message: 'Order details are required for order creation',
-            payment_id: razorpay_payment_id,
-            order_id: razorpay_order_id
-          });
+          console.log('⚠️ No orderDetails received, attempting to use pending order data...');
+          // Try to create order from pending order data (fallback)
+          const pendingOrder = await PendingOrder.findOne({ razorpayOrderId: razorpay_order_id });
+          if (pendingOrder) {
+            // Recursively call with pending order details
+            req.body.orderDetails = pendingOrder.orderDetails;
+            return verifyPayment(req, res);
+          } else {
+            console.error('❌ No orderDetails and no pending order found');
+            return res.status(400).json({
+              success: false,
+              message: 'Order details are required for order creation',
+              payment_id: razorpay_payment_id,
+              order_id: razorpay_order_id
+            });
+          }
         }
       } catch (dbError) {
         console.error('❌ === DATABASE ERROR SAVING ORDER ===');
@@ -626,5 +667,182 @@ export const getPaymentStatus = async (req, res) => {
       message: 'Failed to fetch payment status',
       error: error.message
     });
+  }
+};
+
+// Check Razorpay order status (used by frontend to check if payment went through after modal dismiss)
+export const checkOrderPaymentStatus = async (req, res) => {
+  try {
+    if (!razorpay) {
+      return res.status(500).json({ success: false, message: 'Razorpay not configured' });
+    }
+
+    const { order_id } = req.params;
+    const payments = await razorpay.orders.fetchPayments(order_id);
+    
+    // Check if any payment was captured
+    const capturedPayment = payments.items?.find(p => p.status === 'captured');
+    
+    return res.status(200).json({
+      success: true,
+      paid: !!capturedPayment,
+      payment: capturedPayment ? {
+        id: capturedPayment.id,
+        status: capturedPayment.status,
+        amount: capturedPayment.amount
+      } : null
+    });
+  } catch (error) {
+    console.error('Error checking order payment status:', error);
+    return res.status(500).json({ success: false, message: 'Failed to check payment status' });
+  }
+};
+
+// Razorpay webhook handler - catches payments even if frontend flow is interrupted
+export const handleWebhook = async (req, res) => {
+  try {
+    console.log('🔔 === RAZORPAY WEBHOOK RECEIVED ===');
+    
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      console.error('❌ RAZORPAY_WEBHOOK_SECRET not configured');
+      return res.status(500).json({ success: false, message: 'Webhook secret not configured' });
+    }
+
+    // Verify webhook signature
+    const signature = req.headers['x-razorpay-signature'];
+    if (!signature) {
+      console.error('❌ Missing webhook signature header');
+      return res.status(400).json({ success: false, message: 'Missing signature' });
+    }
+
+    const rawBody = req.rawBody || JSON.stringify(req.body);
+    const expectedSignature = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(rawBody)
+      .digest('hex');
+
+    if (expectedSignature !== signature) {
+      console.error('❌ Webhook signature verification failed');
+      return res.status(400).json({ success: false, message: 'Invalid signature' });
+    }
+
+    console.log('✅ Webhook signature verified');
+
+    const event = req.body.event;
+    console.log('📌 Webhook event:', event);
+
+    // Handle payment.captured event
+    if (event === 'payment.captured') {
+      const payment = req.body.payload.payment.entity;
+      const razorpayOrderId = payment.order_id;
+      const razorpayPaymentId = payment.id;
+      
+      console.log('💰 Payment captured:', razorpayPaymentId, 'for order:', razorpayOrderId);
+
+      // Check if order already exists (created by frontend verify flow)
+      const existingOrder = await Order.findOne({ 'paymentInfo.orderId': razorpayOrderId });
+      if (existingOrder) {
+        console.log('✅ Order already exists for this payment:', existingOrder.orderId);
+        return res.status(200).json({ success: true, message: 'Order already exists' });
+      }
+
+      // Look up pending order details
+      const pendingOrder = await PendingOrder.findOne({ razorpayOrderId });
+      if (!pendingOrder) {
+        console.error('❌ No pending order data found for:', razorpayOrderId);
+        // Log for manual recovery - payment was captured but we have no order details
+        console.error('🚨 MANUAL RECOVERY NEEDED - Payment ID:', razorpayPaymentId, 'Amount:', payment.amount / 100);
+        return res.status(200).json({ success: true, message: 'No pending order data found' });
+      }
+
+      const orderDetails = pendingOrder.orderDetails;
+      console.log('📋 Found pending order details for:', razorpayOrderId);
+
+      // Create the order from pending data
+      try {
+        const validationErrors = validateOrderDetails(orderDetails);
+        if (validationErrors.length > 0) {
+          console.error('❌ Order validation failed in webhook:', validationErrors);
+          return res.status(200).json({ success: true, message: 'Validation failed', errors: validationErrors });
+        }
+
+        const orderId = await generateOrderId();
+        
+        const orderItems = orderDetails.cartItems.map(item => {
+          const [productId] = item.id.split('_');
+          return {
+            productId: productId,
+            productName: item.name || 'Unknown Product',
+            variant: item.variant || 'Regular',
+            price: Number(item.price) || 0,
+            quantity: Number(item.quantity) || 1,
+            totalPrice: (Number(item.price) || 0) * (Number(item.quantity) || 1)
+          };
+        });
+
+        const deliveryAddress = {
+          address: orderDetails.deliveryAddress?.address?.trim() || 'No address provided',
+          lat: orderDetails.deliveryAddress?.lat ? Number(orderDetails.deliveryAddress.lat) : undefined,
+          lng: orderDetails.deliveryAddress?.lng ? Number(orderDetails.deliveryAddress.lng) : undefined,
+          specialRequest: orderDetails.deliveryAddress?.specialRequest?.trim() || ''
+        };
+
+        const estimatedDeliveryTime = calculateEstimatedDeliveryTime(deliveryAddress);
+
+        const newOrder = new Order({
+          orderId,
+          orderNumber: orderId,
+          userId: orderDetails.userId || 'guest',
+          customerInfo: {
+            name: (orderDetails.customerInfo?.fullName || 'Guest').trim(),
+            phone: (orderDetails.customerInfo?.phone || 'N/A').trim(),
+            email: orderDetails.customerInfo?.email?.trim() || ''
+          },
+          deliveryAddress,
+          items: orderItems,
+          pricing: {
+            subtotal: Number(orderDetails.subtotal) || 0,
+            packagingCharge: Number(orderDetails.packagingCharge) || 0,
+            couponDiscount: Number(orderDetails.couponDiscount) || 0,
+            finalTotal: Number(orderDetails.finalTotal) || 0
+          },
+          paymentInfo: {
+            method: 'online',
+            paymentId: razorpayPaymentId,
+            orderId: razorpayOrderId,
+            status: 'paid'
+          },
+          appliedCoupon: orderDetails.appliedCoupon && orderDetails.appliedCoupon.code ? {
+            code: orderDetails.appliedCoupon.code.trim(),
+            discount: Number(orderDetails.appliedCoupon.discount_value || orderDetails.appliedCoupon.discount || 0)
+          } : undefined,
+          estimatedDeliveryTime
+        });
+
+        const savedOrder = await newOrder.save();
+        console.log('✅ [WEBHOOK] Order saved successfully:', orderId);
+
+        // Clean up pending order
+        await PendingOrder.deleteOne({ razorpayOrderId }).catch(() => {});
+
+        // Send Telegram notification
+        telegramService.notifyNewOrder(savedOrder);
+
+        return res.status(200).json({ success: true, message: 'Order created from webhook' });
+      } catch (dbError) {
+        console.error('❌ [WEBHOOK] Database error saving order:', dbError.message);
+        return res.status(200).json({ success: true, message: 'DB error', error: dbError.message });
+      }
+    }
+
+    // For other events, just acknowledge
+    console.log('ℹ️ Unhandled webhook event:', event);
+    return res.status(200).json({ success: true, message: 'Event acknowledged' });
+
+  } catch (error) {
+    console.error('❌ Webhook error:', error);
+    // Always return 200 to Razorpay to prevent retries for processing errors
+    return res.status(200).json({ success: true, message: 'Error processing webhook' });
   }
 };
