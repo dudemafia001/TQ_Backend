@@ -5,15 +5,16 @@ import {
   processCashPayment, 
   getPaymentStatus,
   handleWebhook,
-  checkOrderPaymentStatus
+  checkOrderPaymentStatus,
+  syncPendingPayments
 } from '../controllers/paymentController.js';
 
 const router = express.Router();
 
-// Create Razorpay order
+// Create Razorpay order (also pre-creates Order in DB with status=pending)
 router.post('/create-order', createOrder);
 
-// Verify Razorpay payment
+// Verify Razorpay payment (updates existing pending order to paid)
 router.post('/verify', verifyPayment);
 
 // Razorpay webhook (server-side payment confirmation fallback)
@@ -27,5 +28,8 @@ router.get('/status/:payment_id', getPaymentStatus);
 
 // Check if a Razorpay order has been paid (used after modal dismiss)
 router.get('/order-status/:order_id', checkOrderPaymentStatus);
+
+// Reconcile pending online orders against Razorpay (safety net sync)
+router.post('/sync-pending', syncPendingPayments);
 
 export default router;

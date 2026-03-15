@@ -164,6 +164,53 @@ const validateOrderDetails = (orderDetails) => {
   return errors;
 };
 
+// ─── Shared helper: build an Order document from orderDetails + paymentInfo ───
+const buildOrderDocument = (orderId, orderDetails, paymentInfo) => {
+  const orderItems = orderDetails.cartItems.map(item => {
+    const [productId] = item.id.split('_');
+    return {
+      productId,
+      productName: item.name || 'Unknown Product',
+      variant: item.variant || 'Regular',
+      price: Number(item.price) || 0,
+      quantity: Number(item.quantity) || 1,
+      totalPrice: (Number(item.price) || 0) * (Number(item.quantity) || 1)
+    };
+  });
+
+  const deliveryAddress = {
+    address: orderDetails.deliveryAddress?.address?.trim() || 'No address provided',
+    lat: orderDetails.deliveryAddress?.lat ? Number(orderDetails.deliveryAddress.lat) : undefined,
+    lng: orderDetails.deliveryAddress?.lng ? Number(orderDetails.deliveryAddress.lng) : undefined,
+    specialRequest: orderDetails.deliveryAddress?.specialRequest?.trim() || ''
+  };
+
+  return new Order({
+    orderId,
+    orderNumber: orderId,
+    userId: orderDetails.userId || 'guest',
+    customerInfo: {
+      name: (orderDetails.customerInfo?.fullName || 'Guest').trim(),
+      phone: (orderDetails.customerInfo?.phone || 'N/A').trim(),
+      email: orderDetails.customerInfo?.email?.trim() || ''
+    },
+    deliveryAddress,
+    items: orderItems,
+    pricing: {
+      subtotal: Number(orderDetails.subtotal) || 0,
+      packagingCharge: Number(orderDetails.packagingCharge) || 0,
+      couponDiscount: Number(orderDetails.couponDiscount) || 0,
+      finalTotal: Number(orderDetails.finalTotal) || 0
+    },
+    paymentInfo,
+    appliedCoupon: orderDetails.appliedCoupon?.code ? {
+      code: orderDetails.appliedCoupon.code.trim(),
+      discount: Number(orderDetails.appliedCoupon.discount_value || orderDetails.appliedCoupon.discount || 0)
+    } : undefined,
+    estimatedDeliveryTime: calculateEstimatedDeliveryTime(deliveryAddress)
+  });
+};
+
 // Initialize Razorpay only if credentials are provided
 let razorpay = null;
 
@@ -208,19 +255,51 @@ export const createOrder = async (req, res) => {
     // Create order with Razorpay
     const order = await razorpay.orders.create(options);
 
-    // Save order details for webhook fallback (in case frontend flow is interrupted)
+    // ── PRE-PAYMENT SAFETY: create Order in DB NOW (status = 'pending') ────────
+    // Even if the payment callback or webhook fails, the order record already
+    // exists and will be synced later via /api/payments/sync-pending.
     if (orderDetails) {
-      try {
-        await PendingOrder.findOneAndUpdate(
-          { razorpayOrderId: order.id },
-          { razorpayOrderId: order.id, orderDetails, amount },
-          { upsert: true, new: true }
-        );
-        console.log('📋 Pending order details saved for:', order.id);
-      } catch (pendingErr) {
-        console.error('⚠️ Failed to save pending order details (non-blocking):', pendingErr.message);
+      const validationErrors = validateOrderDetails(orderDetails);
+      if (validationErrors.length === 0) {
+        try {
+          const orderId = await generateOrderId();
+          const newOrder = buildOrderDocument(orderId, orderDetails, {
+            method: 'online',
+            orderId: order.id,   // razorpay order id
+            status: 'pending'
+          });
+          await newOrder.save();
+          // Notify Telegram immediately — shows "⏳ Awaiting Payment" so admins know an order is incoming
+          telegramService.notifyNewOrder(newOrder);
+          console.log('✅ Pre-payment order created:', orderId, '→ razorpay:', order.id);
+        } catch (dbErr) {
+          // Non-blocking – fall through to PendingOrder backup
+          console.error('⚠️ Pre-payment order save failed, falling back to PendingOrder:', dbErr.message);
+          try {
+            await PendingOrder.findOneAndUpdate(
+              { razorpayOrderId: order.id },
+              { razorpayOrderId: order.id, orderDetails, amount },
+              { upsert: true, new: true }
+            );
+          } catch (pendingErr) {
+            console.error('⚠️ PendingOrder backup also failed:', pendingErr.message);
+          }
+        }
+      } else {
+        // Validation failed – save as PendingOrder so webhook can retry
+        console.warn('⚠️ orderDetails validation failed, saving PendingOrder:', validationErrors);
+        try {
+          await PendingOrder.findOneAndUpdate(
+            { razorpayOrderId: order.id },
+            { razorpayOrderId: order.id, orderDetails, amount },
+            { upsert: true, new: true }
+          );
+        } catch (pendingErr) {
+          console.error('⚠️ PendingOrder save failed:', pendingErr.message);
+        }
       }
     }
+    // ─────────────────────────────────────────────────────────────────────────
 
     return res.status(200).json({
       success: true,
@@ -285,15 +364,35 @@ export const verifyPayment = async (req, res) => {
 
     // Verify signature
     if (expectedSignature === razorpay_signature) {
-      // Payment is verified - save order to database
+      // Payment is verified - update the pre-created order to 'paid'
       console.log('Payment verified successfully');
       
-      // Check if order was already created by webhook
+      // Check if order already exists and is already paid (webhook may have processed it first)
       const existingOrder = await Order.findOne({ 'paymentInfo.orderId': razorpay_order_id });
       if (existingOrder) {
-        console.log('✅ Order already exists (created by webhook):', existingOrder.orderId);
-        // Clean up pending order
+        if (existingOrder.paymentInfo.status === 'paid') {
+          console.log('✅ Order already paid (webhook processed first):', existingOrder.orderId);
+          await PendingOrder.deleteOne({ razorpayOrderId: razorpay_order_id }).catch(() => {});
+          return res.status(200).json({
+            success: true,
+            message: 'Payment verified successfully',
+            payment_id: razorpay_payment_id,
+            order_id: razorpay_order_id
+          });
+        }
+
+        // Order exists as 'pending' — update it to 'paid'
+        console.log('💳 Updating pre-created order to paid:', existingOrder.orderId);
+        existingOrder.paymentInfo.paymentId = razorpay_payment_id;
+        existingOrder.paymentInfo.status = 'paid';
+        await existingOrder.save();
+
+        // Clean up pending order data (if any backup existed)
         await PendingOrder.deleteOne({ razorpayOrderId: razorpay_order_id }).catch(() => {});
+
+        // Notify Telegram: payment confirmed (order was pre-created, this fires on money receipt)
+        telegramService.notifyPaymentConfirmed(existingOrder);
+
         return res.status(200).json({
           success: true,
           message: 'Payment verified successfully',
@@ -301,13 +400,12 @@ export const verifyPayment = async (req, res) => {
           order_id: razorpay_order_id
         });
       }
-      
+
+      // ── FALLBACK: order wasn't pre-created (DB save failed during createOrder) ──
+      // Create the order now from orderDetails or PendingOrder backup.
+      console.warn('⚠️ No pre-created order found — creating from verify payload (fallback)');
       try {
-        // Create order in database
         if (orderDetails) {
-          console.log('📋 Creating order for online payment...');
-          console.log('Order Details received:', JSON.stringify(orderDetails, null, 2));
-          
           // Validate order details before processing
           const validationErrors = validateOrderDetails(orderDetails);
           if (validationErrors.length > 0) {
@@ -320,98 +418,23 @@ export const verifyPayment = async (req, res) => {
               order_id: razorpay_order_id
             });
           }
-          
+
           const orderId = await generateOrderId();
-          
-          // Transform cart items to order items format
-          const orderItems = orderDetails.cartItems.map(item => {
-            // Extract product ID from item.id (format: "productId_variant" or just "productId")
-            const [productId] = item.id.split('_');
-            
-            return {
-              productId: productId,
-              productName: item.name || 'Unknown Product',
-              variant: item.variant || 'Regular',
-              price: Number(item.price) || 0,
-              quantity: Number(item.quantity) || 1,
-              totalPrice: (Number(item.price) || 0) * (Number(item.quantity) || 1)
-            };
-          });
-          
-          console.log('📦 Transformed order items:', JSON.stringify(orderItems, null, 2));
-          
-          console.log('📍 DeliveryAddress from frontend:', JSON.stringify(orderDetails.deliveryAddress, null, 2));
-          
-          const deliveryAddress = {
-            address: orderDetails.deliveryAddress?.address?.trim() || 'No address provided',
-            lat: orderDetails.deliveryAddress?.lat ? Number(orderDetails.deliveryAddress.lat) : undefined,
-            lng: orderDetails.deliveryAddress?.lng ? Number(orderDetails.deliveryAddress.lng) : undefined,
-            specialRequest: orderDetails.deliveryAddress?.specialRequest?.trim() || ''
-          };
-          
-          console.log('📍 DeliveryAddress to save:', JSON.stringify(deliveryAddress, null, 2));
-          
-          // Calculate estimated delivery time based on location
-          const estimatedDeliveryTime = calculateEstimatedDeliveryTime(deliveryAddress);
-          console.log('🕒 Calculated delivery time:', estimatedDeliveryTime);
-          
-          const newOrder = new Order({
-            orderId,
-            orderNumber: orderId, // Set orderNumber to avoid null index conflicts
-            userId: orderDetails.userId || 'guest',
-            customerInfo: {
-              name: (orderDetails.customerInfo?.fullName || 'Guest').trim(),
-              phone: (orderDetails.customerInfo?.phone || 'N/A').trim(),
-              email: orderDetails.customerInfo?.email?.trim() || ''
-            },
-            deliveryAddress,
-            items: orderItems,
-            pricing: {
-              subtotal: Number(orderDetails.subtotal) || 0,
-              packagingCharge: Number(orderDetails.packagingCharge) || 0,
-              couponDiscount: Number(orderDetails.couponDiscount) || 0,
-              finalTotal: Number(orderDetails.finalTotal) || 0
-            },
-            paymentInfo: {
-              method: 'online',
-              paymentId: razorpay_payment_id,
-              orderId: razorpay_order_id,
-              status: 'paid'
-            },
-            appliedCoupon: orderDetails.appliedCoupon && orderDetails.appliedCoupon.code ? {
-              code: orderDetails.appliedCoupon.code.trim(),
-              discount: Number(orderDetails.appliedCoupon.discount_value || orderDetails.appliedCoupon.discount || 0)
-            } : undefined,
-            estimatedDeliveryTime
+          const newOrder = buildOrderDocument(orderId, orderDetails, {
+            method: 'online',
+            paymentId: razorpay_payment_id,
+            orderId: razorpay_order_id,
+            status: 'paid'
           });
 
-          console.log('💾 Saving order to database...');
-          console.log('📋 Order object before save:', JSON.stringify(newOrder.toObject(), null, 2));
-          
-          // Validate before saving
-          const validationError = newOrder.validateSync();
-          if (validationError) {
-            console.error('❌ Mongoose validation error:', validationError.message);
-            const fieldErrors = Object.keys(validationError.errors).map(field => 
-              `${field}: ${validationError.errors[field].message}`
-            );
-            throw new Error(`Validation failed: ${fieldErrors.join(', ')}`);
-          }
-          
           const savedOrder = await newOrder.save();
-          console.log('✅ Order saved successfully:', orderId);
-          
-          // Clean up pending order data
+          console.log('✅ Fallback order saved:', orderId);
           await PendingOrder.deleteOne({ razorpayOrderId: razorpay_order_id }).catch(() => {});
-          
-          // Send Telegram notification
           telegramService.notifyNewOrder(savedOrder);
         } else {
-          console.log('⚠️ No orderDetails received, attempting to use pending order data...');
-          // Try to create order from pending order data (fallback)
+          // Try pending order backup
           const pendingOrder = await PendingOrder.findOne({ razorpayOrderId: razorpay_order_id });
           if (pendingOrder) {
-            // Recursively call with pending order details
             req.body.orderDetails = pendingOrder.orderDetails;
             return verifyPayment(req, res);
           } else {
@@ -427,23 +450,11 @@ export const verifyPayment = async (req, res) => {
       } catch (dbError) {
         console.error('❌ === DATABASE ERROR SAVING ORDER ===');
         console.error('Error message:', dbError.message);
-        console.error('Error name:', dbError.name);
-        console.error('Stack trace:', dbError.stack);
-        
-        // Log the order data that failed to save
-        console.error('Failed order data:', JSON.stringify(orderDetails, null, 2));
-        
-        // Determine specific error message
         let errorMessage = 'Failed to save order';
-        if (dbError.code === 11000) {
-          errorMessage = 'Order ID already exists (duplicate order). Please try again.';
-        } else if (dbError.name === 'ValidationError') {
-          errorMessage = `Validation error: ${dbError.message}`;
-        } else if (dbError.name === 'MongoNetworkError') {
-          errorMessage = 'Database connection error. Please try again.';
-        }
-        
-        // Return error response when DB save fails
+        if (dbError.code === 11000) errorMessage = 'Duplicate order ID. Please try again.';
+        else if (dbError.name === 'ValidationError') errorMessage = `Validation error: ${dbError.message}`;
+        else if (dbError.name === 'MongoNetworkError') errorMessage = 'Database connection error.';
+
         return res.status(500).json({
           success: false,
           message: 'Payment verified but order could not be saved',
@@ -774,96 +785,57 @@ export const handleWebhook = async (req, res) => {
         }
       }
 
-      // Check if order already exists (created by frontend verify flow)
+      // Check if order already exists and is already paid (frontend verify processed first)
       const existingOrder = await Order.findOne({ 'paymentInfo.orderId': razorpayOrderId });
       if (existingOrder) {
-        console.log('✅ Order already exists for this payment:', existingOrder.orderId);
-        return res.status(200).json({ success: true, message: 'Order already exists' });
+        if (existingOrder.paymentInfo.status === 'paid') {
+          console.log('✅ Order already paid (frontend verify processed first):', existingOrder.orderId);
+          return res.status(200).json({ success: true, message: 'Order already paid' });
+        }
+
+        // Pre-created order found as 'pending' — update it to 'paid'
+        console.log('💳 [WEBHOOK] Updating pre-created order to paid:', existingOrder.orderId);
+        existingOrder.paymentInfo.paymentId = razorpayPaymentId;
+        existingOrder.paymentInfo.status = 'paid';
+        await existingOrder.save();
+        await PendingOrder.deleteOne({ razorpayOrderId }).catch(() => {});
+        telegramService.notifyPaymentConfirmed(existingOrder);
+        console.log('✅ [WEBHOOK] Order updated to paid:', existingOrder.orderId);
+        return res.status(200).json({ success: true, message: 'Order updated to paid via webhook' });
       }
 
-      // Look up pending order details
+      // ── FALLBACK: no pre-created order (createOrder DB save failed) ──
+      // Try to create from PendingOrder backup.
       const pendingOrder = await PendingOrder.findOne({ razorpayOrderId });
       if (!pendingOrder) {
-        console.error('❌ No pending order data found for:', razorpayOrderId);
-        // Log for manual recovery - payment was captured but we have no order details
+        console.error('❌ No order and no pending order found for:', razorpayOrderId);
         console.error('🚨 MANUAL RECOVERY NEEDED - Payment ID:', razorpayPaymentId, 'Amount:', payment.amount / 100);
-        return res.status(200).json({ success: true, message: 'No pending order data found' });
+        return res.status(200).json({ success: true, message: 'No order data found — manual recovery needed' });
       }
 
       const orderDetails = pendingOrder.orderDetails;
-      console.log('📋 Found pending order details for:', razorpayOrderId);
+      console.log('📋 [WEBHOOK] Creating order from PendingOrder backup for:', razorpayOrderId);
 
       // Create the order from pending data
       try {
         const validationErrors = validateOrderDetails(orderDetails);
         if (validationErrors.length > 0) {
-          console.error('❌ Order validation failed in webhook:', validationErrors);
+          console.error('❌ [WEBHOOK] Order validation failed:', validationErrors);
           return res.status(200).json({ success: true, message: 'Validation failed', errors: validationErrors });
         }
 
         const orderId = await generateOrderId();
-        
-        const orderItems = orderDetails.cartItems.map(item => {
-          const [productId] = item.id.split('_');
-          return {
-            productId: productId,
-            productName: item.name || 'Unknown Product',
-            variant: item.variant || 'Regular',
-            price: Number(item.price) || 0,
-            quantity: Number(item.quantity) || 1,
-            totalPrice: (Number(item.price) || 0) * (Number(item.quantity) || 1)
-          };
+        const newOrder = buildOrderDocument(orderId, orderDetails, {
+          method: 'online',
+          paymentId: razorpayPaymentId,
+          orderId: razorpayOrderId,
+          status: 'paid'
         });
-
-        const deliveryAddress = {
-          address: orderDetails.deliveryAddress?.address?.trim() || 'No address provided',
-          lat: orderDetails.deliveryAddress?.lat ? Number(orderDetails.deliveryAddress.lat) : undefined,
-          lng: orderDetails.deliveryAddress?.lng ? Number(orderDetails.deliveryAddress.lng) : undefined,
-          specialRequest: orderDetails.deliveryAddress?.specialRequest?.trim() || ''
-        };
-
-        const estimatedDeliveryTime = calculateEstimatedDeliveryTime(deliveryAddress);
-
-        const newOrder = new Order({
-          orderId,
-          orderNumber: orderId,
-          userId: orderDetails.userId || 'guest',
-          customerInfo: {
-            name: (orderDetails.customerInfo?.fullName || 'Guest').trim(),
-            phone: (orderDetails.customerInfo?.phone || 'N/A').trim(),
-            email: orderDetails.customerInfo?.email?.trim() || ''
-          },
-          deliveryAddress,
-          items: orderItems,
-          pricing: {
-            subtotal: Number(orderDetails.subtotal) || 0,
-            packagingCharge: Number(orderDetails.packagingCharge) || 0,
-            couponDiscount: Number(orderDetails.couponDiscount) || 0,
-            finalTotal: Number(orderDetails.finalTotal) || 0
-          },
-          paymentInfo: {
-            method: 'online',
-            paymentId: razorpayPaymentId,
-            orderId: razorpayOrderId,
-            status: 'paid'
-          },
-          appliedCoupon: orderDetails.appliedCoupon && orderDetails.appliedCoupon.code ? {
-            code: orderDetails.appliedCoupon.code.trim(),
-            discount: Number(orderDetails.appliedCoupon.discount_value || orderDetails.appliedCoupon.discount || 0)
-          } : undefined,
-          estimatedDeliveryTime
-        });
-
         const savedOrder = await newOrder.save();
-        console.log('✅ [WEBHOOK] Order saved successfully:', orderId);
-
-        // Clean up pending order
+        console.log('✅ [WEBHOOK] Fallback order saved:', orderId);
         await PendingOrder.deleteOne({ razorpayOrderId }).catch(() => {});
-
-        // Send Telegram notification
         telegramService.notifyNewOrder(savedOrder);
-
-        return res.status(200).json({ success: true, message: 'Order created from webhook' });
+        return res.status(200).json({ success: true, message: 'Order created from webhook (fallback)' });
       } catch (dbError) {
         console.error('❌ [WEBHOOK] Database error saving order:', dbError.message);
         return res.status(200).json({ success: true, message: 'DB error', error: dbError.message });
@@ -878,5 +850,66 @@ export const handleWebhook = async (req, res) => {
     console.error('❌ Webhook error:', error);
     // Always return 200 to Razorpay to prevent retries for processing errors
     return res.status(200).json({ success: true, message: 'Error processing webhook' });
+  }
+};
+
+// ── AUTO-SYNC: reconcile pending online orders against Razorpay ───────────────
+// Call POST /api/payments/sync-pending to audit all 'pending' online orders
+// that are older than 5 minutes and mark them 'paid' if Razorpay confirms capture.
+// This is the final safety net: even if both the frontend callback AND the webhook
+// fail, this endpoint will recover the orders.
+export const syncPendingPayments = async (req, res) => {
+  try {
+    if (!razorpay) {
+      return res.status(500).json({ success: false, message: 'Razorpay not configured' });
+    }
+
+    // Find online orders that are still pending and older than 5 minutes
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const pendingOrders = await Order.find({
+      'paymentInfo.method': 'online',
+      'paymentInfo.status': 'pending',
+      createdAt: { $lt: fiveMinutesAgo }
+    });
+
+    console.log(`🔄 Sync: checking ${pendingOrders.length} pending online orders...`);
+
+    let synced = 0;
+    const errors = [];
+
+    for (const order of pendingOrders) {
+      try {
+        const razorpayOrderId = order.paymentInfo.orderId;
+        if (!razorpayOrderId) continue;
+
+        const payments = await razorpay.orders.fetchPayments(razorpayOrderId);
+        const capturedPayment = payments.items?.find(p => p.status === 'captured');
+
+        if (capturedPayment) {
+          order.paymentInfo.paymentId = capturedPayment.id;
+          order.paymentInfo.status = 'paid';
+          await order.save();
+          await PendingOrder.deleteOne({ razorpayOrderId }).catch(() => {});
+          telegramService.notifyPaymentConfirmed(order);
+          console.log(`✅ [SYNC] Order ${order.orderId} marked paid (payment: ${capturedPayment.id})`);
+          synced++;
+        }
+      } catch (err) {
+        console.error(`❌ [SYNC] Error checking order ${order.orderId}:`, err.message);
+        errors.push({ orderId: order.orderId, error: err.message });
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Sync complete: ${synced} order(s) updated`,
+      synced,
+      total: pendingOrders.length,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (error) {
+    console.error('❌ Error in syncPendingPayments:', error);
+    return res.status(500).json({ success: false, message: 'Sync failed', error: error.message });
   }
 };

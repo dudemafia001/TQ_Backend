@@ -43,10 +43,30 @@ class TelegramService {
   }
 
   async notifyNewOrder(order) {
-    // Debug log to see the actual order structure
     console.log('📧 Preparing Telegram notification for order:', order.orderId);
-    console.log('Items structure:', JSON.stringify(order.items, null, 2));
-    
+
+    const paymentMethod = order.paymentInfo?.method;
+    const paymentStatus = order.paymentInfo?.status;
+    const paymentId = order.paymentInfo?.paymentId;
+
+    // Payment mode label
+    const modeLabel = paymentMethod === 'online' ? '💳 Online (Razorpay)' : '💵 Cash on Delivery';
+
+    // Payment status label
+    let statusLabel;
+    if (paymentMethod === 'cash') {
+      statusLabel = '🕐 Pending (COD)';
+    } else if (paymentStatus === 'paid') {
+      statusLabel = '✅ Paid';
+    } else {
+      statusLabel = '⏳ Awaiting Payment';
+    }
+
+    // Payment ID line (only for online orders)
+    const paymentIdLine = paymentMethod === 'online' && paymentId
+      ? `\n🔑 Payment ID: <code>${paymentId}</code>`
+      : '';
+
     const message = `
 🔔 <b>NEW ORDER RECEIVED!</b>
 
@@ -64,9 +84,29 @@ ${order.items.map(item => {
 }).join('\n')}
 
 💰 <b>Total: ₹${order.pricing.finalTotal}</b>
-💳 Payment: ${order.paymentInfo?.method === 'online' ? '✅ Paid Online' : '💵 Cash on Delivery'}
+━━━━━━━━━━━━━━━━
+💳 <b>Payment Mode:</b> ${modeLabel}
+📊 <b>Payment Status:</b> ${statusLabel}${paymentIdLine}
 
 ⏰ ${new Date(order.createdAt).toLocaleString('en-IN')}
+    `.trim();
+
+    await this.sendMessage(message);
+  }
+
+  async notifyPaymentConfirmed(order) {
+    const paymentId = order.paymentInfo?.paymentId || 'N/A';
+    const message = `
+✅ <b>PAYMENT CONFIRMED</b>
+
+📋 Order ID: <b>${order.orderId}</b>
+👤 Customer: ${order.customerInfo.fullName || order.customerInfo.name || 'Guest'}
+📱 Phone: ${order.customerInfo.phone}
+💰 Amount: ₹${order.pricing.finalTotal}
+💳 Mode: Online (Razorpay)
+🔑 Payment ID: <code>${paymentId}</code>
+
+⏰ ${new Date().toLocaleString('en-IN')}
     `.trim();
 
     await this.sendMessage(message);
