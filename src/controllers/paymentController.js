@@ -270,7 +270,7 @@ export const createOrder = async (req, res) => {
           });
           await newOrder.save();
           // Notify Telegram immediately — shows "⏳ Awaiting Payment" so admins know an order is incoming
-          telegramService.notifyNewOrder(newOrder);
+          await telegramService.notifyNewOrder(newOrder);
           console.log('✅ Pre-payment order created:', orderId, '→ razorpay:', order.id);
         } catch (dbErr) {
           // Non-blocking – fall through to PendingOrder backup
@@ -391,7 +391,7 @@ export const verifyPayment = async (req, res) => {
         await PendingOrder.deleteOne({ razorpayOrderId: razorpay_order_id }).catch(() => {});
 
         // Notify Telegram: payment confirmed (order was pre-created, this fires on money receipt)
-        telegramService.notifyPaymentConfirmed(existingOrder);
+        await telegramService.notifyPaymentConfirmed(existingOrder);
 
         return res.status(200).json({
           success: true,
@@ -430,7 +430,7 @@ export const verifyPayment = async (req, res) => {
           const savedOrder = await newOrder.save();
           console.log('✅ Fallback order saved:', orderId);
           await PendingOrder.deleteOne({ razorpayOrderId: razorpay_order_id }).catch(() => {});
-          telegramService.notifyNewOrder(savedOrder);
+          await telegramService.notifyNewOrder(savedOrder);
         } else {
           // Try pending order backup
           const pendingOrder = await PendingOrder.findOne({ razorpayOrderId: razorpay_order_id });
@@ -600,7 +600,7 @@ export const processCashPayment = async (req, res) => {
       console.log('✅ Cash order saved to database:', orderId);
 
       // Send Telegram notification
-      telegramService.notifyNewOrder(savedOrder);
+      await telegramService.notifyNewOrder(savedOrder);
 
       return res.status(200).json({
         success: true,
@@ -799,7 +799,7 @@ export const handleWebhook = async (req, res) => {
         existingOrder.paymentInfo.status = 'paid';
         await existingOrder.save();
         await PendingOrder.deleteOne({ razorpayOrderId }).catch(() => {});
-        telegramService.notifyPaymentConfirmed(existingOrder);
+        await telegramService.notifyPaymentConfirmed(existingOrder);
         console.log('✅ [WEBHOOK] Order updated to paid:', existingOrder.orderId);
         return res.status(200).json({ success: true, message: 'Order updated to paid via webhook' });
       }
@@ -834,7 +834,7 @@ export const handleWebhook = async (req, res) => {
         const savedOrder = await newOrder.save();
         console.log('✅ [WEBHOOK] Fallback order saved:', orderId);
         await PendingOrder.deleteOne({ razorpayOrderId }).catch(() => {});
-        telegramService.notifyNewOrder(savedOrder);
+        await telegramService.notifyNewOrder(savedOrder);
         return res.status(200).json({ success: true, message: 'Order created from webhook (fallback)' });
       } catch (dbError) {
         console.error('❌ [WEBHOOK] Database error saving order:', dbError.message);
@@ -890,7 +890,7 @@ export const syncPendingPayments = async (req, res) => {
           order.paymentInfo.status = 'paid';
           await order.save();
           await PendingOrder.deleteOne({ razorpayOrderId }).catch(() => {});
-          telegramService.notifyPaymentConfirmed(order);
+          await telegramService.notifyPaymentConfirmed(order);
           console.log(`✅ [SYNC] Order ${order.orderId} marked paid (payment: ${capturedPayment.id})`);
           synced++;
         }
